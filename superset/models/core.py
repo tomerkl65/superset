@@ -32,7 +32,6 @@ from datetime import datetime
 from functools import lru_cache
 from inspect import signature
 from typing import Any, Callable, cast, Optional, TYPE_CHECKING
-from weakref import WeakSet
 from urllib.parse import quote
 
 import numpy
@@ -105,16 +104,6 @@ logger = logging.getLogger(__name__)
 # different kwargs naturally falls through to a fresh engine.
 _ENGINE_CACHE: dict[tuple[int, str, str], Engine] = {}
 _ENGINE_CACHE_LOCK = threading.Lock()
-
-# Tracks engines that already have a prequeries "connect" listener registered.
-# Engines are cached and shared across threads (see ``_ENGINE_CACHE``), so the
-# prequeries listener must be registered once per engine rather than added and
-# removed on every request. Mutating a shared engine's listener collection
-# while another thread iterates it (when opening a connection) raises
-# "deque mutated during iteration". A ``WeakSet`` lets engines be garbage
-# collected when they fall out of the cache.
-_PREQUERIES_REGISTERED_ENGINES: "WeakSet[Engine]" = WeakSet()
-_PREQUERIES_LISTENER_LOCK = threading.Lock()
 
 if TYPE_CHECKING:
     from superset_core.queries.types import AsyncQueryHandle, QueryOptions, QueryResult
@@ -508,50 +497,54 @@ class Database(CoreDatabase, AuditMixinNullable, ImportExportMixin):  # pylint: 
             engine_context_manager = app.config["ENGINE_CONTEXT_MANAGER"]
             with engine_context_manager(self, catalog, schema):
                 with check_for_oauth2(self):
+                    prequeries = self.db_engine_spec.get_prequeries(
+                        database=self,
+                        catalog=catalog,
+                        schema=schema,
+                    )
+                    # Prequeries attach a per-call ``connect`` listener below
+                    # (and remove it on exit). SQLAlchemy's listener collection
+                    # is an unlocked deque, so mutating it on an engine shared
+                    # via ``_ENGINE_CACHE`` races with concurrent connection
+                    # checkouts iterating the same deque ("RuntimeError: deque
+                    # mutated during iteration", surfacing as 500s). Request a
+                    # private, uncached engine whenever prequeries are present
+                    # so the listener add/remove never touches a shared object.
                     engine = self._get_sqla_engine(
                         catalog=catalog,
                         schema=schema,
                         nullpool=nullpool,
                         source=source,
                         sqlalchemy_uri=sqlalchemy_uri,
-                    )
-                    prequeries = self.db_engine_spec.get_prequeries(
-                        database=self,
-                        catalog=catalog,
-                        schema=schema,
+                        cacheable=not prequeries,
                     )
                     if prequeries:
                         # SQLAlchemy connect event: runs prequeries on every new
                         # DBAPI connection (e.g. SET search_path for PostgreSQL).
-                        #
-                        # Register the listener once per engine. Engines are
-                        # cached and shared across threads, so adding/removing a
-                        # listener on every request mutates the engine's shared
-                        # listener collection while other threads iterate it when
-                        # opening connections, raising
-                        # "deque mutated during iteration". The engine cache key
-                        # includes catalog/schema, so an engine's prequeries are
-                        # stable and only need to be registered a single time.
-                        with _PREQUERIES_LISTENER_LOCK:
-                            if engine not in _PREQUERIES_REGISTERED_ENGINES:
+                        def run_prequeries(
+                            dbapi_connection: Any,
+                            connection_record: Any,  # pylint: disable=unused-argument
+                        ) -> None:
+                            cursor = dbapi_connection.cursor()
+                            try:
+                                for prequery in prequeries:
+                                    cursor.execute(prequery)
+                            finally:
+                                cursor.close()
 
-                                def run_prequeries(
-                                    dbapi_connection: Any,
-                                    connection_record: Any,  # pylint: disable=unused-argument
-                                    # Capture prequeries by value at definition
-                                    # time to avoid Python's closure late-binding.
-                                    _prequeries: list[str] = prequeries,
-                                ) -> None:
-                                    cursor = dbapi_connection.cursor()
-                                    try:
-                                        for prequery in _prequeries:
-                                            cursor.execute(prequery)
-                                    finally:
-                                        cursor.close()
-
-                                sqla.event.listen(engine, "connect", run_prequeries)
-                                _PREQUERIES_REGISTERED_ENGINES.add(engine)
-                        yield engine
+                        sqla.event.listen(engine, "connect", run_prequeries)
+                        try:
+                            yield engine
+                        finally:
+                            sqla.event.remove(engine, "connect", run_prequeries)
+                            # The engine is private (cacheable=False above), so
+                            # nothing else can hold a reference: dispose it to
+                            # release its pool immediately. With the default
+                            # nullpool=True this is a no-op safety net; it
+                            # matters if a caller ever passes nullpool=False,
+                            # where each private engine would otherwise keep a
+                            # short-lived QueuePool alive until GC.
+                            engine.dispose()
                     else:
                         yield engine
 
@@ -562,6 +555,7 @@ class Database(CoreDatabase, AuditMixinNullable, ImportExportMixin):  # pylint: 
         nullpool: bool = True,
         source: utils.QuerySource | None = None,
         sqlalchemy_uri: str | None = None,
+        cacheable: bool = True,
     ) -> Engine:
         sqlalchemy_url = make_url_safe(
             sqlalchemy_uri if sqlalchemy_uri else self.sqlalchemy_uri_decrypted
@@ -634,9 +628,13 @@ class Database(CoreDatabase, AuditMixinNullable, ImportExportMixin):  # pylint: 
         # cache on ``not nullpool`` would leave it dormant everywhere it
         # actually matters. Unsaved instances (``self.id is None``) are
         # excluded so two distinct in-memory ``Database`` objects with the
-        # same URI can't collide on a shared cache entry.
+        # same URI can't collide on a shared cache entry. Callers that need to
+        # mutate the engine's event listeners (``get_sqla_engine`` with
+        # prequeries) pass ``cacheable=False`` for a private engine: listener
+        # registration on a shared engine races with concurrent connection
+        # checkouts iterating the same unlocked listener deque.
         cache_key: tuple[int, str, str] | None = None
-        if self.id is not None:
+        if cacheable and self.id is not None:
             cache_key = (
                 self.id,
                 str(sqlalchemy_url),
@@ -721,6 +719,46 @@ class Database(CoreDatabase, AuditMixinNullable, ImportExportMixin):  # pylint: 
         return self.db_engine_spec.get_default_schema_for_query(
             self, query, template_params
         )
+
+    def resolve_query_default_schema(
+        self,
+        sql: str,
+        schema: str | None,
+        catalog: str | None,
+        template_params: Optional[dict[str, Any]] = None,
+    ) -> str | None:
+        """
+        Resolve the effective per-query default schema for a SQL string through
+        the query-aware :meth:`get_default_schema_for_query`.
+
+        Builds a transient (unsaved) ``Query`` probe so the engine spec resolves
+        the schema exactly as execution does -- running engine-specific per-query
+        security gates too -- then expunges it so the ``database`` backref's
+        ``cascade="all, delete-orphan"`` cannot autoflush this incomplete row
+        into the session. Centralizes the probe construction shared by the SQL
+        Lab executor, the cost-estimate command, and datasource denylist checks
+        so the schema-resolution behavior stays in sync across these
+        security-sensitive paths.
+
+        :param sql: Original (pre-render) SQL the query will execute
+        :param schema: Explicit per-query schema, if any
+        :param catalog: Resolved catalog
+        :param template_params: Jinja template parameters, if any
+        :returns: The runtime-resolved default schema, or None
+        """
+        from superset.models.sql_lab import Query
+
+        probe_query = Query(
+            database=self,
+            sql=sql,
+            schema=schema or None,
+            catalog=catalog,
+            client_id=utils.shortid()[:10],
+            user_id=utils.get_user_id(),
+        )
+        if probe_query in db.session:
+            db.session.expunge(probe_query)
+        return self.get_default_schema_for_query(probe_query, template_params)
 
     @staticmethod
     def post_process_df(df: pd.DataFrame) -> pd.DataFrame:
@@ -1280,7 +1318,11 @@ class Database(CoreDatabase, AuditMixinNullable, ImportExportMixin):  # pylint: 
 
     @property
     def sql_url(self) -> str:
-        return f"/superset/sql/{self.id}/"
+        # SQL Lab moved to its own blueprint at /sqllab/; the legacy
+        # /superset/sql/<id>/ route was removed when Superset.route_base
+        # collapsed to "". Deep-link by databaseId instead so this property
+        # resolves to a live route under any application_root.
+        return f"/sqllab/?dbid={self.id}"
 
     @hybrid_property
     def perm(self) -> str:
