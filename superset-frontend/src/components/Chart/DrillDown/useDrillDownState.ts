@@ -273,6 +273,23 @@ export function useDrillDownState({
     return updated as QueryFormData;
   }, [formData, drillStack, currentDepth, hierarchy]);
 
+  // Keep the latest effective form-data reachable from the fetch effect
+  // without listing the object itself as a dependency (its identity churns on
+  // every unrelated dashboard re-render).
+  const effectiveFormDataRef = useRef(effectiveFormData);
+  effectiveFormDataRef.current = effectiveFormData;
+
+  // Re-run the fetch only when the *content* of the drill query changes, not
+  // when an unrelated re-render (e.g. a cross-filter update elsewhere on the
+  // dashboard) hands us a new formData object with identical values. Without
+  // this guard those identity-only changes re-run the effect and cancel the
+  // in-flight request before it can clear the loading flag, leaving the chart
+  // spinning until the 60s query timeout.
+  const effectiveFormDataKey = useMemo(
+    () => JSON.stringify(effectiveFormData),
+    [effectiveFormData],
+  );
+
   // Fetch data whenever the user drills (stack changes and is non-empty).
   useEffect(() => {
     if (currentDepth === 0) {
@@ -281,11 +298,12 @@ export function useDrillDownState({
       return undefined;
     }
 
+    const activeFormData = effectiveFormDataRef.current;
     let cancelled = false;
     setIsLoading(true);
     setError(undefined);
 
-    const [useLegacyApi] = getQuerySettings(effectiveFormData);
+    const [useLegacyApi] = getQuerySettings(activeFormData);
 
     const extractMessage = async (err: unknown): Promise<string> => {
       let message = (err as { message?: string })?.message;
@@ -316,7 +334,7 @@ export function useDrillDownState({
         try {
           // eslint-disable-next-line no-await-in-loop
           const { response, json } = await getChartDataRequest({
-            formData: effectiveFormData,
+            formData: activeFormData,
           });
           // eslint-disable-next-line no-await-in-loop
           const queriesResponse = await handleChartDataResponse(
@@ -346,7 +364,7 @@ export function useDrillDownState({
             // eslint-disable-next-line no-console
             console.error('[DrillDown] query failed', {
               message,
-              effectiveFormData,
+              effectiveFormData: activeFormData,
             });
             if (!cancelled) {
               setError(message);
@@ -365,7 +383,11 @@ export function useDrillDownState({
     return () => {
       cancelled = true;
     };
-  }, [effectiveFormData, currentDepth]);
+    // effectiveFormDataKey is a stable serialization of effectiveFormData; the
+    // object itself is read via effectiveFormDataRef to avoid re-running on
+    // identity-only changes.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [effectiveFormDataKey, currentDepth]);
 
   const drillDown = useCallback<UseDrillDownStateResult['drillDown']>(
     (filters, label) => {
