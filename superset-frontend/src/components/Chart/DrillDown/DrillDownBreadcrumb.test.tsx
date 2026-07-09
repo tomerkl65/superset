@@ -83,24 +83,19 @@ test('clicking a breadcrumb segment calls onJumpTo with correct depth', () => {
   expect(onJumpTo).toHaveBeenCalledWith(1);
 });
 
-test('keyboard Enter on breadcrumb calls onJumpTo', () => {
-  const onJumpTo = jest.fn();
-
+test('clickable breadcrumb segments are native buttons (keyboard accessible)', () => {
   render(
     <DrillDownBreadcrumb
       hierarchy={hierarchy}
       drillStack={drillStack}
-      onJumpTo={onJumpTo}
+      onJumpTo={jest.fn()}
     />,
   );
 
-  // Press Enter on the root segment
-  fireEvent.keyDown(screen.getByText('country'), { key: 'Enter' });
-  expect(onJumpTo).toHaveBeenCalledWith(0);
-
-  // Press Enter on the 'USA' segment
-  fireEvent.keyDown(screen.getByText('USA'), { key: 'Enter' });
-  expect(onJumpTo).toHaveBeenCalledWith(1);
+  // Clickable segments render as a native <button>, which the browser makes
+  // operable via Enter/Space and focusable without hand-rolled a11y handlers.
+  expect(screen.getByText('country').tagName).toBe('BUTTON');
+  expect(screen.getByText('USA').tagName).toBe('BUTTON');
 });
 
 test('selectedLeaf is rendered as non-clickable text', () => {

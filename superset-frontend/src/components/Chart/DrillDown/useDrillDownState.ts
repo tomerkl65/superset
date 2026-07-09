@@ -67,6 +67,8 @@ const DEFAULT_ADHOC_FILTERS_FIELD = 'adhoc_filters';
 interface StoredDrillState {
   drillStack: DrillDownLevel[];
   selectedLeaf?: string;
+  /** Filters for the value selected at the deepest level, if any. */
+  selectedLeafFilters?: BinaryQueryObjectFilterClause[];
 }
 const drillStateStore = new Map<string | number, StoredDrillState>();
 
@@ -113,11 +115,7 @@ interface UseDrillDownStateResult {
    * Push a new level onto the drill stack. Called from the chart's click
    * handler with the filters that identify the clicked data point.
    */
-  drillDown: (
-    filters: BinaryQueryObjectFilterClause[],
-    label: string,
-    options?: { groupbyFieldName?: string; adhocFilterFieldName?: string },
-  ) => void;
+  drillDown: (filters: BinaryQueryObjectFilterClause[], label: string) => void;
   /** Truncate the drill stack to the given depth (0 = back to start) */
   resetTo: (depth: number) => void;
   /** Reset to base data (depth 0) */
@@ -147,6 +145,18 @@ export function useDrillDownState({
   const [selectedLeaf, setSelectedLeaf] = useState<string | undefined>(() =>
     chartKey != null ? drillStateStore.get(chartKey)?.selectedLeaf : undefined,
   );
+  // Filters for the value picked at the deepest level. Applied to the drilled
+  // chart's own query so it narrows to the selected leaf (a single bar),
+  // independent of the dashboard's cross-filter scope config. Without this the
+  // drilled chart keeps showing the full leaf distribution and only charts that
+  // happen to include themselves in their cross-filter scope look "filtered".
+  const [selectedLeafFilters, setSelectedLeafFilters] = useState<
+    BinaryQueryObjectFilterClause[] | undefined
+  >(() =>
+    chartKey != null
+      ? drillStateStore.get(chartKey)?.selectedLeafFilters
+      : undefined,
+  );
   const [drillData, setDrillData] = useState<QueryData[] | null>(null);
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState<string | undefined>();
@@ -157,7 +167,11 @@ export function useDrillDownState({
   // restore stale state before the effect runs, so the mutators below write
   // through this helper immediately instead.
   const persist = useCallback(
-    (stack: DrillDownLevel[], leaf: string | undefined) => {
+    (
+      stack: DrillDownLevel[],
+      leaf: string | undefined,
+      leafFilters: BinaryQueryObjectFilterClause[] | undefined,
+    ) => {
       if (chartKey == null) {
         return;
       }
@@ -167,6 +181,7 @@ export function useDrillDownState({
         drillStateStore.set(chartKey, {
           drillStack: stack,
           selectedLeaf: leaf,
+          selectedLeafFilters: leafFilters,
         });
       }
     },
@@ -191,6 +206,7 @@ export function useDrillDownState({
     }
     setDrillStack([]);
     setSelectedLeaf(undefined);
+    setSelectedLeafFilters(undefined);
     setDrillData(null);
     setError(undefined);
   }, [configKey, chartKey]);
@@ -265,13 +281,19 @@ export function useDrillDownState({
       updated[DEFAULT_GROUPBY_FIELD] = [nextColumn];
     }
 
+    // At the deepest level a picked value narrows the chart to that single
+    // leaf (matching the breadcrumb selection), rather than showing the full
+    // leaf distribution.
+    const leafFilters = selectedLeafFilters ?? [];
+
     updated[DEFAULT_ADHOC_FILTERS_FIELD] = [
       ...baseAdhoc,
       ...accumulatedFilters.map(f => simpleFilterToAdhoc(f)),
+      ...leafFilters.map(f => simpleFilterToAdhoc(f)),
     ];
 
     return updated as QueryFormData;
-  }, [formData, drillStack, currentDepth, hierarchy]);
+  }, [formData, drillStack, currentDepth, hierarchy, selectedLeafFilters]);
 
   // Keep the latest effective form-data reachable from the fetch effect
   // without listing the object itself as a dependency (its identity churns on
@@ -393,10 +415,13 @@ export function useDrillDownState({
     (filters, label) => {
       let nextStack: DrillDownLevel[];
       let nextLeaf: string | undefined;
-      // If we're at the last level, can't drill deeper — just record the selection
+      let nextLeafFilters: BinaryQueryObjectFilterClause[] | undefined;
+      // If we're at the last level, can't drill deeper — record the selection
+      // and keep its filters so the chart narrows to the picked leaf.
       if (drillStack.length >= hierarchy.length - 1) {
         nextStack = drillStack;
         nextLeaf = label;
+        nextLeafFilters = filters;
       } else {
         // Clear any previous leaf selection when drilling deeper
         nextStack = [
@@ -404,10 +429,12 @@ export function useDrillDownState({
           { column: hierarchy[drillStack.length], filters, label },
         ];
         nextLeaf = undefined;
+        nextLeafFilters = undefined;
       }
       setDrillStack(nextStack);
       setSelectedLeaf(nextLeaf);
-      persist(nextStack, nextLeaf);
+      setSelectedLeafFilters(nextLeafFilters);
+      persist(nextStack, nextLeaf, nextLeafFilters);
     },
     [drillStack, hierarchy, persist],
   );
@@ -417,7 +444,8 @@ export function useDrillDownState({
       const nextStack = drillStack.slice(0, depth);
       setDrillStack(nextStack);
       setSelectedLeaf(undefined);
-      persist(nextStack, undefined);
+      setSelectedLeafFilters(undefined);
+      persist(nextStack, undefined, undefined);
     },
     [drillStack, persist],
   );
@@ -425,7 +453,8 @@ export function useDrillDownState({
   const reset = useCallback(() => {
     setDrillStack([]);
     setSelectedLeaf(undefined);
-    persist([], undefined);
+    setSelectedLeafFilters(undefined);
+    persist([], undefined, undefined);
   }, [persist]);
 
   return {

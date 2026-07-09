@@ -57,6 +57,26 @@ export function DrillDownBreadcrumb({
     return null;
   }
 
+  const separatorCss = css`
+    color: ${theme.colorTextTertiary};
+    margin: 0 ${theme.sizeUnit / 2}px;
+  `;
+
+  // Native <button> reset to render as an inline link — keeps built-in
+  // keyboard/focus a11y without hand-rolled role/tabIndex/onKeyDown.
+  const linkCss = css`
+    cursor: pointer;
+    color: ${theme.colorPrimary};
+    background: none;
+    border: none;
+    padding: 0;
+    font: inherit;
+    line-height: inherit;
+    &:hover {
+      text-decoration: underline;
+    }
+  `;
+
   return (
     <div
       data-test="drill-down-breadcrumb"
@@ -71,69 +91,31 @@ export function DrillDownBreadcrumb({
         flex-wrap: wrap;
       `}
     >
-      <span
-        role="button"
-        tabIndex={0}
-        onClick={handleClick(0)}
-        onKeyDown={e => {
-          if (e.key === 'Enter' || e.key === ' ') {
-            e.preventDefault();
-            onJumpTo(0);
-          }
-        }}
-        css={css`
-          cursor: pointer;
-          color: ${theme.colorPrimary};
-        `}
-      >
+      <button type="button" onClick={handleClick(0)} css={linkCss}>
         {hierarchy[0] ?? ''}
-      </span>
+      </button>
       {drillStack.map((level, index) => {
         const isLast = index === drillStack.length - 1 && !selectedLeaf;
         return (
           <span key={index}>
-            <span
-              css={css`
-                color: ${theme.colorTextTertiary};
-                margin: 0 2px;
-              `}
-            >
-              ›
-            </span>
+            <span css={separatorCss}>›</span>
             {isLast ? (
               <span>{level.label}</span>
             ) : (
-              <span
-                role="button"
-                tabIndex={0}
+              <button
+                type="button"
                 onClick={handleClick(index + 1)}
-                onKeyDown={e => {
-                  if (e.key === 'Enter' || e.key === ' ') {
-                    e.preventDefault();
-                    onJumpTo(index + 1);
-                  }
-                }}
-                css={css`
-                  cursor: pointer;
-                  color: ${theme.colorPrimary};
-                `}
+                css={linkCss}
               >
                 {level.label}
-              </span>
+              </button>
             )}
           </span>
         );
       })}
       {selectedLeaf && (
         <span>
-          <span
-            css={css`
-              color: ${theme.colorTextTertiary};
-              margin: 0 2px;
-            `}
-          >
-            ›
-          </span>
+          <span css={separatorCss}>›</span>
           <span>{selectedLeaf}</span>
         </span>
       )}

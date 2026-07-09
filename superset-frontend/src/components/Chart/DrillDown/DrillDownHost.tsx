@@ -56,8 +56,8 @@ interface DrillDownHostProps extends ChartRendererProps {
  * form_data declares a `drilldown_hierarchy`, this host:
  *
  *  1. Tracks how deep the user has drilled (a stack of levels)
- *  2. Computes "effective" form_data for the current level (replacing the
- *     groupby and adding accumulated filters)
+ *  2. Computes "effective" form_data for the current level (swapping the
+ *     grouping dimension — groupby or x_axis — and adding accumulated filters)
  *  3. Re-fetches chart data for that level
  *  4. Renders a breadcrumb above the chart for navigating back up
  *
@@ -97,8 +97,8 @@ export function DrillDownHost({
 
   const overlayProps = useMemo<Partial<ChartRendererProps>>(() => {
     if (!isDrilling) {
-      // Force re-render when returning to base level
-      return { triggerRender: true };
+      // At the base level, render the chart unchanged.
+      return {};
     }
     return {
       formData: effectiveFormData as QueryFormData,
@@ -106,7 +106,6 @@ export function DrillDownHost({
       chartStatus: isLoading ? 'loading' : 'rendered',
       latestQueryFormData: effectiveFormData,
       chartIsStale: false,
-      triggerRender: true,
     };
   }, [isDrilling, effectiveFormData, effectiveQueriesResponse, isLoading]);
 

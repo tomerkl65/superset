@@ -376,3 +376,88 @@ test('reconfiguring the chart (viz type change) clears persisted drill state', a
   expect(result.current.drillStack).toHaveLength(0);
   expect(result.current.isDrilling).toBe(false);
 });
+
+test('effectiveFormData narrows to the selected leaf at the deepest level', () => {
+  const formData = {
+    ...baseFormData,
+    x_axis: ['country', 'region'],
+    groupby: [],
+  };
+
+  const { result } = renderHook(() =>
+    useDrillDownState({
+      formData,
+      baseQueriesResponse: [{ data: [] }],
+    }),
+  );
+
+  // Drill into 'country' — now showing the 'region' level.
+  act(() => {
+    result.current.drillDown([{ col: 'country', op: '==', val: 'USA' }], 'USA');
+  });
+
+  // Pick a value at the deepest level ('region').
+  act(() => {
+    result.current.drillDown(
+      [{ col: 'region', op: '==', val: 'Texas' }],
+      'Texas',
+    );
+  });
+
+  expect(result.current.selectedLeaf).toBe('Texas');
+
+  const effective = result.current.effectiveFormData as Record<string, unknown>;
+  // The x_axis stays on the deepest column.
+  expect(effective.x_axis).toBe('region');
+
+  const adhocFilters = effective.adhoc_filters as Record<string, unknown>[];
+  // Both the accumulated ancestor filter and the picked leaf filter apply,
+  // so the chart narrows to the single selected leaf.
+  expect(adhocFilters).toEqual(
+    expect.arrayContaining([
+      expect.objectContaining({ subject: 'country', comparator: 'USA' }),
+      expect.objectContaining({ subject: 'region', comparator: 'Texas' }),
+    ]),
+  );
+});
+
+test('resetTo clears the selected leaf filter', () => {
+  const formData = {
+    ...baseFormData,
+    x_axis: ['country', 'region'],
+    groupby: [],
+  };
+
+  const { result } = renderHook(() =>
+    useDrillDownState({
+      formData,
+      baseQueriesResponse: [{ data: [] }],
+    }),
+  );
+
+  act(() => {
+    result.current.drillDown([{ col: 'country', op: '==', val: 'USA' }], 'USA');
+  });
+  act(() => {
+    result.current.drillDown(
+      [{ col: 'region', op: '==', val: 'Texas' }],
+      'Texas',
+    );
+  });
+
+  expect(result.current.selectedLeaf).toBe('Texas');
+
+  // Navigating back to the top level clears the leaf selection and its filter.
+  act(() => {
+    result.current.resetTo(1);
+  });
+
+  expect(result.current.selectedLeaf).toBeUndefined();
+  const effective = result.current.effectiveFormData as Record<string, unknown>;
+  const adhocFilters = effective.adhoc_filters as Record<string, unknown>[];
+  expect(adhocFilters).not.toEqual(
+    expect.arrayContaining([
+      expect.objectContaining({ subject: 'region', comparator: 'Texas' }),
+    ]),
+  );
+});
