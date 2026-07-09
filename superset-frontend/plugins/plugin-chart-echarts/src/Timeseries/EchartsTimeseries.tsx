@@ -266,23 +266,8 @@ export default function EchartsTimeseries({
                 formattedVal: String(values[i]),
               });
             });
-            // Also emit cross-filter so other charts in the dashboard filter too
-            if (emitCrossFilters) {
-              // Use direct setDataMask (not handleChange which toggles)
-              setDataMask({
-                extraFormData: {
-                  filters: groupby.map((col, idx) => ({
-                    col,
-                    op: 'IN' as const,
-                    val: [values[idx]] as (string | number | boolean)[],
-                  })),
-                },
-                filterState: {
-                  value: [values],
-                  selectedValues: [name],
-                },
-              });
-            }
+            // Cross-filter is emitted by the DrillDownHost with the full
+            // accumulated drill path; here we only report the click upward.
           } else if (
             xAxis.type === AxisType.Category &&
             props.data?.[0] != null
@@ -294,24 +279,8 @@ export default function EchartsTimeseries({
               val: props.data[0],
               formattedVal: String(props.data[0]),
             });
-            // Also emit cross-filter by x-axis value
-            if (emitCrossFilters) {
-              setDataMask({
-                extraFormData: {
-                  filters: [
-                    {
-                      col: xAxis.label,
-                      op: 'IN' as const,
-                      val: [props.data[0]] as (string | number | boolean)[],
-                    },
-                  ],
-                },
-                filterState: {
-                  value: [String(props.data[0])],
-                  selectedValues: [String(props.data[0])],
-                },
-              });
-            }
+            // Cross-filter is emitted by the DrillDownHost with the full
+            // accumulated drill path; here we only report the click upward.
           } else if (props.name) {
             // Fallback: use the event name (typically the x-axis label)
             drillFilters.push({

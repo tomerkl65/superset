@@ -181,8 +181,7 @@ test('returning to the top level clears the cross-filter and re-queries the base
   };
 
   let capturedOnDrillDown:
-    | ((filters: unknown, label: string) => void)
-    | undefined;
+    ((filters: unknown, label: string) => void) | undefined;
   function CaptureRenderer(
     props: ChartRendererProps & {
       onDrillDown?: (filters: unknown, label: string) => void;
@@ -218,4 +217,62 @@ test('returning to the top level clears the cross-filter and re-queries the base
   // ...and a fresh base query is triggered so stale (filtered) base data from
   // cross-filter activity while drilled is replaced by the full chart.
   expect(triggerQuery).toHaveBeenCalledWith(true, 1);
+});
+
+test('drilling emits a cross-filter for the full accumulated path', () => {
+  const updateDataMask = jest.fn();
+  const formDataWithHierarchy: QueryFormData = {
+    ...baseFormData,
+    x_axis: ['country', 'region', 'city'],
+  };
+
+  let capturedOnDrillDown:
+    ((filters: unknown, label: string) => void) | undefined;
+  function CaptureRenderer(
+    props: ChartRendererProps & {
+      onDrillDown?: (filters: unknown, label: string) => void;
+    },
+  ) {
+    capturedOnDrillDown = props.onDrillDown;
+    return <div data-test="mock-chart-renderer" />;
+  }
+
+  render(
+    <DrillDownHost
+      ChartRendererComponent={CaptureRenderer as any}
+      {...baseRendererProps}
+      formData={formDataWithHierarchy}
+      emitCrossFilters
+      actions={{ updateDataMask } as any}
+    />,
+  );
+
+  // First level: country = USA.
+  act(() => {
+    capturedOnDrillDown?.([{ col: 'country', op: '==', val: 'USA' }], 'USA');
+  });
+  expect(updateDataMask).toHaveBeenLastCalledWith(
+    1,
+    expect.objectContaining({
+      extraFormData: {
+        filters: [{ col: 'country', op: 'IN', val: ['USA'] }],
+      },
+    }),
+  );
+
+  // Second level: region = Texas. The cross-filter must carry BOTH levels.
+  act(() => {
+    capturedOnDrillDown?.([{ col: 'region', op: '==', val: 'Texas' }], 'Texas');
+  });
+  expect(updateDataMask).toHaveBeenLastCalledWith(
+    1,
+    expect.objectContaining({
+      extraFormData: {
+        filters: [
+          { col: 'country', op: 'IN', val: ['USA'] },
+          { col: 'region', op: 'IN', val: ['Texas'] },
+        ],
+      },
+    }),
+  );
 });

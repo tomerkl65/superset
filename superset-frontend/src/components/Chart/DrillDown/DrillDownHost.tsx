@@ -91,9 +91,42 @@ export function DrillDownHost({
       return undefined;
     }
     return (filters, label) => {
+      // Emit a cross-filter for the FULL drill path — every level reached so
+      // far plus this click — so other dashboard charts are scoped to exactly
+      // what the drilled chart shows, not just the deepest clicked column.
+      const pathFilters = [
+        ...drillStack.flatMap(level => level.filters),
+        ...filters,
+      ];
+      const pathLabels = [...drillStack.map(level => level.label), label];
       drillDown(filters, label);
+      if (
+        rendererProps.emitCrossFilters &&
+        rendererProps.actions?.updateDataMask
+      ) {
+        rendererProps.actions.updateDataMask(rendererProps.chartId, {
+          extraFormData: {
+            filters: pathFilters.map(f => ({
+              col: f.col,
+              op: 'IN' as const,
+              val: [f.val] as (string | number | boolean)[],
+            })),
+          },
+          filterState: {
+            value: pathLabels,
+            selectedValues: pathLabels,
+          },
+        });
+      }
     };
-  }, [hasHierarchy, drillDown]);
+  }, [
+    hasHierarchy,
+    drillDown,
+    drillStack,
+    rendererProps.emitCrossFilters,
+    rendererProps.actions,
+    rendererProps.chartId,
+  ]);
 
   const overlayProps = useMemo<Partial<ChartRendererProps>>(() => {
     if (!isDrilling) {

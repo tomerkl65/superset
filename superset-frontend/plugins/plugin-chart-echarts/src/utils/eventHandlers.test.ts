@@ -69,7 +69,7 @@ test('allEventHandlers returns drill-down click handler when onDrillDown is pres
   );
 });
 
-test('drill-down click handler calls both setDataMask and onDrillDown', () => {
+test('drill-down click handler reports the click via onDrillDown only', () => {
   const onDrillDown = jest.fn();
   const setDataMask = jest.fn();
   const props: TransformedProps = {
@@ -82,17 +82,17 @@ test('drill-down click handler calls both setDataMask and onDrillDown', () => {
   const handlers = allEventHandlers(props);
   handlers.click({ name: 'USA' });
 
-  // onDrillDown should be called
+  // onDrillDown should be called with the clicked filters
   expect(onDrillDown).toHaveBeenCalledTimes(1);
-  // setDataMask should also be called (cross-filter emission)
-  expect(setDataMask).toHaveBeenCalledTimes(1);
-  expect(setDataMask).toHaveBeenCalledWith(
-    expect.objectContaining({
-      extraFormData: expect.objectContaining({
-        filters: expect.any(Array),
-      }),
-    }),
+  expect(onDrillDown).toHaveBeenCalledWith(
+    expect.arrayContaining([
+      expect.objectContaining({ col: 'country', op: '==', val: 'USA' }),
+    ]),
+    expect.any(String),
   );
+  // The cross-filter is emitted by the DrillDownHost with the full drill
+  // path, so the plugin's drill handler must NOT emit one itself.
+  expect(setDataMask).not.toHaveBeenCalled();
 });
 
 test('without onDrillDown, regular click handler is used (cross-filter only)', () => {
@@ -126,7 +126,8 @@ test('drill-down click handler does not call setDataMask when emitCrossFilters i
 
   // onDrillDown should still be called
   expect(onDrillDown).toHaveBeenCalledTimes(1);
-  // setDataMask should NOT be called since emitCrossFilters is false
+  // The drill handler never emits a cross-filter (the DrillDownHost does),
+  // and with emitCrossFilters false none is emitted at all.
   expect(setDataMask).not.toHaveBeenCalled();
 });
 
