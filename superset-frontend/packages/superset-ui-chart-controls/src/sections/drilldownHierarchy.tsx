@@ -51,9 +51,9 @@ export const drilldownHierarchySection: ControlPanelSectionConfig = {
           label: t('Drill-down levels'),
           description: t(
             'Ordered list of columns to drill into when a user clicks ' +
-              'a data point. The chart displays its x-axis column initially. ' +
-              'Each click drills to the next level, scoped to the clicked ' +
-              'value. Drag rows to reorder levels.',
+              "a data point. The chart's primary dimension is shown " +
+              'initially. Each click drills to the next level, scoped to the ' +
+              'clicked value. Drag rows to reorder levels.',
           ),
           default: [],
           // Configures click behavior only; the base query is unchanged, so

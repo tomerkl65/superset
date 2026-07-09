@@ -461,3 +461,20 @@ test('resetTo clears the selected leaf filter', () => {
     ]),
   );
 });
+
+test('hierarchy prepends the first groupby column for groupby-based charts', () => {
+  const formData = {
+    ...baseFormData,
+    x_axis: undefined,
+    groupby: ['parent'],
+    drilldown_hierarchy: ['id', 'city'],
+  } as unknown as QueryFormData;
+
+  const { result } = renderHook(() =>
+    useDrillDownState({ formData, baseQueriesResponse: [{ data: [] }] }),
+  );
+
+  // The chart's first groupby column is the top level, prepended when the
+  // author lists only the deeper levels.
+  expect(result.current.hierarchy).toEqual(['parent', 'id', 'city']);
+});

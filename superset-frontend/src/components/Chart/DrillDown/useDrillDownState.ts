@@ -213,23 +213,35 @@ export function useDrillDownState({
 
   const hierarchy = useMemo<string[]>(() => {
     const fd = formData as Record<string, unknown>;
-
-    // Option 1: x_axis is an array (multi-column, the new UX)
     const xAxis = fd.x_axis ?? fd.xAxis;
-    if (Array.isArray(xAxis) && xAxis.length > 1) {
-      return xAxis as string[];
-    }
 
-    // Option 2: explicit drilldown_hierarchy field (legacy/separate control)
+    // Primary source: the dedicated `drilldown_hierarchy` control. The chart's
+    // own primary dimension (x_axis for axis charts, the first groupby column
+    // for groupby charts) is the top level and is prepended automatically when
+    // the author lists only the deeper levels.
     const drillLevels = ensureIsArray(
       fd[HIERARCHY_FIELD] ?? fd[HIERARCHY_FIELD_CAMEL],
     ) as string[];
     if (drillLevels.length > 0) {
       const xAxisStr = typeof xAxis === 'string' ? xAxis : undefined;
-      if (xAxisStr && !drillLevels.includes(xAxisStr)) {
-        return [xAxisStr, ...drillLevels];
+      if (xAxisStr) {
+        return drillLevels.includes(xAxisStr)
+          ? drillLevels
+          : [xAxisStr, ...drillLevels];
+      }
+      const firstGroupby = ensureIsArray(fd[DEFAULT_GROUPBY_FIELD]).find(
+        col => typeof col === 'string',
+      ) as string | undefined;
+      if (firstGroupby && !drillLevels.includes(firstGroupby)) {
+        return [firstGroupby, ...drillLevels];
       }
       return drillLevels;
+    }
+
+    // Backward compat: a legacy chart may have x_axis stored as a multi-column
+    // array (from before the dedicated control existed).
+    if (Array.isArray(xAxis) && xAxis.length > 1) {
+      return xAxis as string[];
     }
 
     return [];
